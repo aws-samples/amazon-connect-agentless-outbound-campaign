@@ -1,0 +1,147 @@
+{
+  "Comment": "Amazon Connect Agentless Outbound Campaign Outreach Process",
+  "StartAt": "Capture Top Execution Info",
+  "States": {
+    "Capture Top Execution Info": {
+      "Type": "Pass",
+      "Next": "Set Config",
+      "Parameters": {
+        "startTime.$": "$$.Execution.StartTime",
+        "execName.$": "$$.Execution.Name",
+        "executionId.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.topExecInfo"
+    },
+    "Set Config": {
+      "Type": "Pass",
+      "Next": "Process Contacts from DDB",
+      "Result": {
+        "general": {
+          "BusinessHourStartTime": "08:00:00.000Z",
+          "BusinessHourEndTime": "17:00:00.000Z",
+          "BusinessHourTimeZone": "US/Pacific"
+        },
+        "connect": {
+          "ContactFlowId": "<<ContactFlowId>>",
+          "InstanceId": "<<ConnectInstanceId>>",
+          "SourcePhoneNumber": "<<Connect_SourcePhoneNumber>>"
+        }
+      },
+      "ResultPath": "$.config"
+    },
+    "Process Contacts from DDB": {
+      "Type": "Task",
+      "Next": "Loop each Contacts from DDB Response",
+      "Parameters": {
+        "TableName": "<<DDB-CONTACTS-TABLE-NAME>>",
+        "AttributesToGet": [
+          "phoneNumber",
+          "userLanguage"
+        ],
+        "ReturnConsumedCapacity": "TOTAL"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:scan",
+      "ResultPath": "$.dynamodbResult"
+    },
+    "Loop each Contacts from DDB Response": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "Current Iteration Info",
+        "States": {
+          "Current Iteration Info": {
+            "Type": "Pass",
+            "Parameters": {
+              "startTime.$": "$$.Execution.StartTime",
+              "execName.$": "$$.Execution.Name",
+              "executionId.$": "$$.Execution.Id"
+            },
+            "ResultPath": "$.currentIterationInfo",
+            "Next": "Create an Entry on DynamoDB"
+          },
+          "Create an Entry on DynamoDB": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "<<DDB-EXECUTION-TABLE-NAME>>",
+              "Item": {
+                "campaignExecutionId.$": "$.currentIterationInfo.execName",
+                "phoneNumber.$": "$.item.phoneNumber",
+                "userLanguage.$": "$.item.userLanguage",
+                "topExecutionId.$": "$.topExecInfo.execName",
+                "executionId.$": "$.currentIterationInfo.execName"
+              }
+            },
+            "ResultPath": "$.results.createItem",
+            "ResultSelector": {
+              "statusCode.$": "$.SdkHttpMetadata.HttpStatusCode"
+            },
+            "Next": "StartOutboundVoiceContact"
+          },
+          "StartOutboundVoiceContact": {
+            "Type": "Task",
+            "Parameters": {
+              "ContactFlowId.$": "$.connectConfig.ContactFlowId",
+              "DestinationPhoneNumber.$": "$.item.phoneNumber.S",
+              "InstanceId.$": "$.connectConfig.InstanceId",
+              "SourcePhoneNumber.$": "$.connectConfig.SourcePhoneNumber",
+              "TrafficType": "CAMPAIGN",
+              "AnswerMachineDetectionConfig": {
+                "AwaitAnswerMachinePrompt": true,
+                "EnableAnswerMachineDetection": true
+              },
+              "Attributes": {
+                "language": "$.item.userLanguage"
+              }
+            },
+            "Resource": "arn:aws:states:::aws-sdk:connect:startOutboundVoiceContact",
+            "ResultPath": "$.results.startOutboundVoiceContact",
+            "Next": "Update ContactId to DynamoDB"
+          },
+          "Update ContactId to DynamoDB": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "<<DDB-EXECUTION-TABLE-NAME>>",
+              "Item": {
+                "campaignExecutionId.$": "$.currentIterationInfo.execName",
+                "phoneNumber.$": "$.item.phoneNumber",
+                "contactId.$": "$.results.startOutboundVoiceContact.ContactId"
+              }
+            },
+            "ResultPath": "$.results.createItem",
+            "ResultSelector": {
+              "statusCode.$": "$.SdkHttpMetadata.HttpStatusCode"
+            },
+            "Next": "Wait for Pacing Outbound Calls"
+          },
+          "Wait for Pacing Outbound Calls": {
+            "Type": "Wait",
+            "Seconds": 3,
+            "End": true
+          }
+        }
+      },
+      "Label": "LoopeachContactsfromDDBResponse",
+      "MaxConcurrency": 1,
+      "Comment": "Loop each Contacts from CSV File",
+      "ItemSelector": {
+        "index.$": "$$.Map.Item.Index",
+        "item.$": "$$.Map.Item.Value",
+        "topExecInfo.$": "$.topExecInfo",
+        "generalConfig.$": "$.config.general",
+        "connectConfig.$": "$.config.connect"
+      },
+      "Next": "Send Current Execution Notification",
+      "ToleratedFailurePercentage": 100,
+      "ItemsPath": "$.dynamodbResult.Items"
+    },
+    "Send Current Execution Notification": {
+      "Type": "Pass",
+      "End": true
+    }
+  }
+}

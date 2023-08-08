@@ -1,0 +1,71 @@
+{
+  "Comment": "Amazon Connect Agentless Outbound Campaign Intake Process",
+  "StartAt": "Capture Top Execution Info",
+  "States": {
+    "Capture Top Execution Info": {
+      "Type": "Pass",
+      "Parameters": {
+        "startTime.$": "$$.Execution.StartTime",
+        "execName.$": "$$.Execution.Name",
+        "executionId.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.topExecInfo",
+      "Next": "Loop each Contacts from CSV File"
+    },
+    "Loop each Contacts from CSV File": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "EXPRESS"
+        },
+        "StartAt": "Current Iteration Info",
+        "States": {
+          "Current Iteration Info": {
+            "Type": "Pass",
+            "Next": "DynamoDB PutItem",
+            "Parameters": {
+              "startTime.$": "$$.Execution.StartTime",
+              "execName.$": "$$.Execution.Name",
+              "executionId.$": "$$.Execution.Id"
+            },
+            "ResultPath": "$.currentIterationInfo"
+          },
+          "DynamoDB PutItem": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "<<DDB-CONTACTS-TABLE-NAME>>",
+              "Item": {
+                "phoneNumber.$": "$.item.PhoneNumber",
+                "userLanguage.$": "$.item.UserLang",
+                "executionId.$": "$.currentIterationInfo.execName",
+                "topExecutionId.$": "$.topExecInfo.execName"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:getObject",
+        "ReaderConfig": {
+          "InputType": "CSV",
+          "CSVHeaderLocation": "FIRST_ROW"
+        },
+        "Parameters": {
+          "Bucket": "<<S3-BUCKET-NAME>>",
+          "Key": "unprocessed/contact_example_import.csv"
+        }
+      },
+      "MaxConcurrency": 1,
+      "Label": "LoopeachContactsfromCSVFile",
+      "End": true,
+      "ItemSelector": {
+        "index.$": "$$.Map.Item.Index",
+        "item.$": "$$.Map.Item.Value",
+        "topExecInfo.$": "$.topExecInfo"
+      }
+    }
+  }
+}
